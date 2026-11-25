@@ -696,6 +696,12 @@ bool ScopDetection::isValidCallInst(CallInst &CI,
     if (isValidIntrinsicInst(*II, Context))
       return true;
 
+  // Unknown calls go through addUnknown(), which cannot take filtered alias
+  // tags. Keep rejecting local scopes on these calls, including when the
+  // optional mod/ref-call support is enabled. Memory intrinsics return above.
+  if (CI.getAAMetadata() != getScopAAMetadata(CI, Context.CurRegion))
+    return false;
+
   Function *CalledFunction = CI.getCalledFunction();
 
   // Indirect calls are not supported.
@@ -754,6 +760,26 @@ bool ScopDetection::isValidCallInst(CallInst &CI,
 
 bool ScopDetection::isValidIntrinsicInst(IntrinsicInst &II,
                                          DetectionContext &Context) const {
+  if (auto *Decl = dyn_cast<NoAliasScopeDeclInst>(&II)) {
+    // Codegen omits declarations inside the SCoP. Do not accept a scope whose
+    // lifetime also matters to instructions that codegen will leave outside it.
+    for (const BasicBlock &BB : *II.getFunction()) {
+      if (Context.CurRegion.contains(&BB))
+        continue;
+      for (const Instruction &I : BB) {
+        AAMDNodes Tags = I.getAAMetadata();
+        for (MDNode *List : {Tags.Scope, Tags.NoAlias}) {
+          if (!List)
+            continue;
+          for (const MDOperand &Scope : List->operands())
+            if (is_contained(Decl->getScopeList()->operands(), Scope))
+              return false;
+        }
+      }
+    }
+    return true;
+  }
+
   if (isIgnoredIntrinsic(&II))
     return true;
 
@@ -1138,7 +1164,7 @@ bool ScopDetection::isValidAccess(Instruction *Inst, const SCEV *AF,
 
   // Check if the base pointer of the memory access does alias with
   // any other pointer. This cannot be handled at the moment.
-  AAMDNodes AATags = Inst->getAAMetadata();
+  AAMDNodes AATags = getScopAAMetadata(*Inst, Context.CurRegion);
   AliasSet &AS = Context.AST.getAliasSetFor(
       MemoryLocation::getBeforeOrAfter(BP->getValue(), AATags));
 

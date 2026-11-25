@@ -437,6 +437,12 @@ bool isHoistableLoad(llvm::LoadInst *LInst, llvm::Region &R, llvm::LoopInfo &LI,
 ///        generation.
 bool isIgnoredIntrinsic(const llvm::Value *V);
 
+/// Return alias metadata valid across all iterations of R. Scopes declared
+/// inside R may only describe one iteration and cannot disambiguate whole
+/// arrays. Keep the original IR intact for the fallback version.
+llvm::AAMDNodes getScopAAMetadata(const llvm::Instruction &I,
+                                  const llvm::Region &R);
+
 /// Check whether a value an be synthesized by the code generator.
 ///
 /// Some value will be recalculated only from information that is code generated

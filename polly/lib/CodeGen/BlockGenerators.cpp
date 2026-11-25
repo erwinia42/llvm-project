@@ -214,6 +214,10 @@ Value *BlockGenerator::getNewValue(ScopStmt &Stmt, Value *Old, ValueMapT &BBMap,
 void BlockGenerator::copyInstScalar(ScopStmt &Stmt, Instruction *Inst,
                                     ValueMapT &BBMap, LoopToScevMapT &LTS) {
   Instruction *NewInst = Inst->clone();
+  // Cloned calls (including memcpy/memmove) retain metadata, unlike the loads
+  // and stores we rebuild. Do not carry iteration-local scopes into new loops.
+  NewInst->setAAMetadata(
+      getScopAAMetadata(*Inst, Stmt.getParent()->getRegion()));
 
   // Replace old operands with the new ones.
   for (Value *OldOperand : Inst->operands()) {

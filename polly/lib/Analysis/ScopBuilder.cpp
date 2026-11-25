@@ -3496,11 +3496,18 @@ ScopBuilder::buildAliasGroupsForAccesses() {
       if (!MA->isRead())
         HasWriteAccess.insert(MA->getScopArrayInfo());
       MemAccInst Acc(MA->getAccessInstruction());
-      if (MA->isRead() && isa<MemTransferInst>(Acc))
-        PtrToAcc[cast<MemTransferInst>(Acc)->getRawSource()] = MA;
-      else
-        PtrToAcc[Acc.getPointerOperand()] = MA;
-      AST.add(Acc);
+      Value *Ptr = MA->isRead() && isa<MemTransferInst>(Acc)
+                       ? cast<MemTransferInst>(Acc)->getRawSource()
+                       : Acc.getPointerOperand();
+      PtrToAcc[Ptr] = MA;
+      AAMDNodes Tags = getScopAAMetadata(*Acc, scop->getRegion());
+      if (Tags == Acc->getAAMetadata()) {
+        AST.add(Acc);
+      } else {
+        // A local scope cannot prove separation across iterations. Track the
+        // full pointer range; buildAliasGroups computes precise runtime bounds.
+        AST.add(MemoryLocation::getBeforeOrAfter(Ptr, Tags));
+      }
     }
   }
 

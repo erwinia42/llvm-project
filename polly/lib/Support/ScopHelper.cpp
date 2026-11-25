@@ -14,10 +14,12 @@
 #include "polly/Options.h"
 #include "polly/ScopInfo.h"
 #include "polly/Support/SCEVValidator.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/ScalarEvolutionExpander.h"
@@ -615,6 +617,9 @@ bool polly::isHoistableLoad(LoadInst *LInst, Region &R, LoopInfo &LI,
 bool polly::isIgnoredIntrinsic(const Value *V) {
   if (auto *IT = dyn_cast<IntrinsicInst>(V)) {
     switch (IT->getIntrinsicID()) {
+    // Local scopes are excluded from SCoP-wide alias proofs by
+    // getScopAAMetadata. Codegen rebuilds array alias scopes from those proofs.
+    case llvm::Intrinsic::experimental_noalias_scope_decl:
     // Lifetime markers are supported/ignored.
     case llvm::Intrinsic::lifetime_start:
     case llvm::Intrinsic::lifetime_end:
@@ -633,6 +638,44 @@ bool polly::isIgnoredIntrinsic(const Value *V) {
     }
   }
   return false;
+}
+
+AAMDNodes polly::getScopAAMetadata(const Instruction &I, const Region &R) {
+  AAMDNodes Tags = I.getAAMetadata();
+  if (!Tags.Scope && !Tags.NoAlias)
+    return Tags;
+
+  const Function *Decl =
+      I.getModule()->getFunction("llvm.experimental.noalias.scope.decl");
+  if (!Decl)
+    return Tags;
+
+  SmallPtrSet<const Metadata *, 8> LocalScopes;
+  for (const User *U : Decl->users()) {
+    auto *ScopeDecl = dyn_cast<NoAliasScopeDeclInst>(U);
+    if (!ScopeDecl || ScopeDecl->getFunction() != I.getFunction() ||
+        !R.contains(ScopeDecl->getParent()))
+      continue;
+    for (const MDOperand &Scope : ScopeDecl->getScopeList()->operands())
+      LocalScopes.insert(Scope.get());
+  }
+  if (LocalScopes.empty())
+    return Tags;
+
+  auto Filter = [&](MDNode *List) -> MDNode * {
+    if (!List)
+      return nullptr;
+    SmallVector<Metadata *> Kept;
+    for (const MDOperand &Scope : List->operands())
+      if (!LocalScopes.contains(Scope.get()))
+        Kept.push_back(Scope.get());
+    if (Kept.size() == List->getNumOperands())
+      return List;
+    return Kept.empty() ? nullptr : MDNode::get(I.getContext(), Kept);
+  };
+  Tags.Scope = Filter(Tags.Scope);
+  Tags.NoAlias = Filter(Tags.NoAlias);
+  return Tags;
 }
 
 bool polly::canSynthesize(const Value *V, const Scop &S, ScalarEvolution *SE,
